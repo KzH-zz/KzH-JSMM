@@ -1,0 +1,721 @@
+<html>
+<head>
+<style type="text/css"><!--
+span.s {
+    position: absolute;
+}
+span.inside {
+    padding: 1px;
+}
+.transp {
+    filter: alpha(opacity=60); opacity: 0.6;
+}
+div.lmenuBox {
+    position: absolute;
+    margin: 4px;
+    left:3%; top:0%;
+    width:90%;
+}
+div.rmenuBox {
+    margin: 4px;
+    position: absolute;
+    right:3%; top:0%;
+}
+#graphBox {
+    position: absolute;
+    left:0%; top:0%;
+    width:100%; height:100%;
+    overflow: auto;
+}
+#graph {
+    position: absolute;
+    left:0%; top:0%;
+    width:100%; height:100%;
+}
+div.bottomBox {
+    color: #AAAAAA;
+    position:absolute;
+    right:3%; bottom:1%;
+}
+div.dialog {
+    position:fixed;
+    background: #BBBBBB;
+    filter: alpha(opacity=80); opacity: 0.8;
+    left:0%; top:0%;
+    width:100%; height:100%;
+}
+div.dialogWrap {
+    position:relative;
+    left:20%; top:10%;
+}
+div.dialogContent {
+    position:relative;
+    border: 20px solid #666666;
+    background: #EEEEEE;
+    filter: alpha(opacity=90); opacity: 0.9;
+    left: -20px; top: -20px;
+    width:60%; height:80%;
+}
+div.dialogTitle{
+    background: #DDDDDD;
+    padding: 2px
+}
+div.dialogMain{
+    overflow: auto;
+    padding: 2px;
+    width: 100%;
+}
+div.dialogButton {
+    position: absolute;
+    top: 0px; right: 0px;
+}
+.dialog{
+    display: none;
+}
+.hide{
+    display: none;
+}
+--></style>
+<script type="text/javascript" src="http://www.google.com/jsapi"></script>
+<script type="text/javascript">
+google.load('gdata', '2.x');
+function onGoogleDataLoad() {
+}
+google.setOnLoadCallback(onGoogleDataLoad);
+</script>
+<script language="javascript"><!--
+google.load("jquery", "1.3.2");
+
+if(!window['console']){
+    console = {};
+    console.log = function(){};
+}
+// Old WebKit workaround.
+var defaultBody = '';
+(function(){
+    var match = /AppleWebKit\/([0-9]+)/.exec(navigator.appVersion);
+    if(match && parseInt(match[1])<=531) defaultBody = '.'
+})();
+
+// debug utilities
+function loga(args){
+    console.log(/function\s+([\w0-9\_]+)/.exec(args.callee)[1]+'('+Array.prototype.join.call(args,', ')+').');
+}
+function defaultErrorHandler(error){
+    console.log('error:', error);
+}
+Array.prototype.map = function(fn){
+    var result = []
+    for(var i=0; i<this.length; ++i) result.push(fn(this[i]));
+    return result;
+}
+Array.prototype.each = function(fn){
+    for(var i=0; i<this.length; ++i) fn(this[i]);
+}
+
+// global attrs
+var serviceName = 'jsmm'
+var serviceVersion = 'jsmm-0.1'
+var docsScope = 'http://docs.google.com/feeds/'
+var scope = 'http://spreadsheets.google.com/feeds/'
+
+// authentication
+function doLogin(s){
+    var token = google.accounts.user.checkLogin(s);
+    if(!token) token = google.accounts.user.login(s)
+    console.log(s, token);
+}
+function doLogout(){
+    google.accounts.user.logout();
+}
+
+// feed util
+function findLink(links, re, callback){
+    for(var j=0, link; link = links[j]; ++j){
+	if(re.exec(link.rel)) return link;
+    }
+}
+
+// DB access
+var DB = {
+    createTable : function (service, tablesfeed, continuation) {
+	console.log(arguments);
+	var createTable = {
+	    xmlns: "http://www.w3.org/2005/Atom",
+	    xmlns$gs: "http://schemas.google.com/spreadsheets/2006",
+	    title: { $t : "Table 1", type:'text' },
+	    gs$worksheet: { name:'Sheet 1' },
+	    gs$header: { row:'1' },
+	    gs$data: {
+		numRows:'0',
+		startRow:'2',
+		gs$column: [{ index:'A', name:'body' },
+			    { index:'B', name:'attr' }]
+	    },
+	};
+	doLogin(scope);
+	service.insertEntry(tablesfeed,
+			    createTable,
+			    function(resp){
+				console.log("createTable:", resp);
+				continuation(resp.entry.content.src);
+			    }, defaultErrorHandler);
+    },
+    createNewDocument : function(title, continuation){
+	var newEntry = {
+	    xmlns:"http://www.w3.org/2005/Atom",
+	    category: { scheme: "http://schemas.google.com/g/2005#kind",
+			term: "http://schemas.google.com/docs/2007#spreadsheet" },
+	    title: { $t: title, type: "text" },
+	};
+	var service = new google.gdata.client.GoogleService(serviceName, serviceVersion);
+	doLogin(docsScope);
+	service.insertEntry(docsScope + 'documents/private/full/', newEntry,
+			    function(entryRoot){
+				console.log("newEntry:", entryRoot);
+				DB.createTable(service,
+					       findLink(entryRoot.entry.link, /#tablesfeed/).href,
+					       continuation);
+			    }, defaultErrorHandler);
+    },
+    /// * load records and create nodes
+    loadRecords : function(href, cont){
+	var service = new google.gdata.client.GoogleService(serviceName, serviceVersion);
+	service.getFeed(href, function(records){
+	    console.log('records', records);
+	    if(records.feed){
+		cont(href, records.feed);
+	    }
+	}, defaultErrorHandler);
+    },
+    loadTable: function(sheetId, cont){
+	var service = new google.gdata.client.GoogleService(serviceName, serviceVersion);
+	doLogin(scope);
+	service.getFeed(scope + sheetId + '/tables/',
+			function(response){
+			    console.log('tablesfeeds', response);
+			    DB.loadRecords(response.feed.entry[0].content.src, cont);
+			}, defaultErrorHandler);
+    }
+};
+
+// Editor IF
+var JSMM = {
+    createNewDocument : function(title) {
+	JSMM.showDialog('Opening New Document ...');
+	// create new doc, create table
+	DB.createNewDocument(title, function(recordfeeds){
+	    JSMM.createRoot();
+	    JSMM.recordfeeds = recordfeeds;
+	    JSMM.hideDialog();
+	});
+    },
+    createRoot : function(){
+	var root = new Node('0');
+	root.body = 'root';
+	nodes = {'0': root};
+	JSMM.recordfeeds = null;
+	JSMM.showNodes();
+	root.focus();
+    },
+    openDocument : function(sheetId) {
+	JSMM.showDialog('Loading ...');
+	DB.loadTable(sheetId, function(recordfeeds, feed){
+	    JSMM.hideDialog();
+	    JSMM.recordfeeds = recordfeeds
+	    nodes = {}; /// TODO: avaid direct manupilation ?
+	    // build nodes
+	    if(feed.entry){
+		for(var i=0, entry; entry = feed.entry[i]; ++i){
+		    field = function(name){
+			for(var i=0, f; f=entry['gs$field'][i]; ++i) if(f.name==name) return f['$t'];
+			return "";
+		    }
+		    var attr = JSON.parse(field("attr"));
+		    console.log(attr);
+		    var node = new Node(attr.node);
+		    node.body = field("body");
+		    node.children = attr.children;
+		    node.storeRecord();
+		}
+		// connect parent
+		for(var i in nodes){
+		    node = nodes[i];
+		    node.eachChild(function(child){
+			child.parent = node.node;
+		    });
+		}
+	    }else{
+		// empty document
+		JSMM.createRoot();
+	    }
+	    JSMM.showNodes();
+	});
+    },
+    // save
+    save : function(){
+	var service = new google.gdata.client.GoogleService(serviceName, serviceVersion);
+	doLogin(scope);
+
+	JSMM.showDialog('Saving ...');
+
+	var status = {}
+	for(var i in nodes){
+	    var node = nodes[i];
+	    var elem = $('#s'+node.node);
+	    var body = elem.children()[0].innerHTML;
+	    if(!node.record){
+		status[i] = false;
+	    }else if (node.changed(body)) {
+		status[i] = false;
+	    }
+	}
+	var checkAndFin = function(){
+	    var done = true;
+	    for(var j in status) if(!status[j]) done = false;
+	    if(done){
+		JSMM.hideDialog();
+		console.log('done', status);
+	    }
+	}
+	for(var i in nodes){
+	    var node = nodes[i];
+	    var elem = $('#s'+node.node);
+	    var body = elem.children()[0].innerHTML;
+	    if(!node.record){
+		console.log('to save new record', node)
+		// save new record
+		var newRecord = {
+		    xmlns: "http://www.w3.org/2005/Atom",
+		    xmlns$gs: "http://schemas.google.com/spreadsheets/2006",
+		    gs$field: [{ name: "body", $t: body },
+			       { name: "attr", $t: node.serializeAttr() }],
+		};
+		(function(nodeId){
+		    service.insertEntry(JSMM.recordfeeds, newRecord, function(entryRoot){
+			console.log("newRecord:", nodeId, entryRoot);
+			status[nodeId] = entryRoot;
+			// update record (link, etag)
+			nodes[nodeId].storeRecord(entryRoot.entry);
+			checkAndFin();
+		    }, function(e){
+			status[i] = e;
+		    });
+		})(i);
+	    }else{
+		// save updated nodes
+		if (node.changed(body)) {
+		    console.log('to save updated record', node)
+		    var record = {
+			xmlns: "http://www.w3.org/2005/Atom",
+			xmlns$gd: "http://schemas.google.com/g/2005",
+			xmlns$gs: "http://schemas.google.com/spreadsheets/2006",
+			gd$etag: node.record['gd$etag'],
+			gs$field: [{ name: "body", $t: body },
+				   { name: "attr", $t: node.serializeAttr() }],
+		    };
+		    (function(nodeId){
+			var editfeeds = findLink(node.record.link, /edit/).href;
+			console.log('editfeed', editfeeds, node.record);
+			service.updateEntry(editfeeds, record, function(entryRoot){
+			    console.log("record:", nodeId, entryRoot);
+			    status[nodeId] = entryRoot;
+			    nodes[nodeId].storeRecord(entryRoot.entry);
+			    checkAndFin();
+			}, function(e){
+			    console.log("error", nodeId, e);
+			    status[i] = e;
+			});
+		    })(i);
+		}
+	    }
+	}
+    },
+    // view
+    updatePositions : function(){
+	for(var index in nodes) nodes[index].updateElem();
+	nodes['0'].updateHeight();
+	nodes['0'].y = Math.max(30, $('#graphBox').height()/2-nodes['0'].height/2);
+	nodes['0'].updateCSS();
+	nodes['0'].updatePositions();
+	JSMM.drawCanvas();
+    },
+    // event handling
+    handleKeyForNode : function(e){
+	var code = e.which;
+	var node = nodes[/s([0-9]+)/.exec(e.currentTarget.id)[1]];
+	$('.bottomBox')[0].innerHTML = code + ' ' + e.altKey.toString();
+	if(!e.altKey){
+	    switch(code){
+	    case 13: // return ... add a sibling.
+		var c = node.addSibling();
+		if(c){
+		    c.updateElem();
+		    JSMM.updatePositions();
+		    c.focus();
+		}
+		return false;
+	    case 9: // tab ... add a child.
+		var c = node.addChild().updateElem();
+		JSMM.updatePositions();
+		c.focus();
+		return false;
+	    default:
+		JSMM.updatePositions();
+		$('.bottomBox')[0].innerHTML += ' return true';
+		return true;
+	    }
+	} else {
+	    switch(code){
+	    case 37: // left
+		node.getParent().focus();
+		return false;
+	    case 39: // right
+		node.getChild(0).focus();
+		return false;
+	    case 38: // up
+		(node.getSibling(-1) ||
+		 node.getParent().getSibling(-1).getChild(-1) ||
+		 node.getParent().getSibling(-1)).focus();
+		return false;
+	    case 40: // down
+		(node.getSibling(1) ||
+		 node.getParent().getSibling(1).getChild(0) ||
+		 node.getParent().getSibling(1)).focus();
+		return false;
+	    case 32: // space
+		node.toggleChildren();
+		JSMM.updatePositions();
+		return false;
+	    case 8: // delete
+		node.remove();
+		JSMM.updatePositions();
+		return false;
+	    default:
+		console.log(e, code);
+		JSMM.updatePositions();
+		return  true;
+	    }
+	}
+    },
+    handleClickForNode : function(e){
+	var node = nodes[/s([0-9]+)/.exec(e.currentTarget.id)[1]];
+	var elem = $('#s'+node.node);
+	var body = elem.children()[0].innerHTML;
+	console.log(body, node.serializeAttr());
+    },
+    setupNodeAttr : function(){
+	$('span.s').children().attr('contenteditable', 'true');
+	$('span.s').focus(JSMM.updatePositions);
+	$('span.s').keydown(JSMM.handleKeyForNode);
+	$('span.s').click(JSMM.handleClickForNode);
+    },
+    showNodes : function(){
+	// add nodes
+	var html = []
+	for(var index in nodes){
+	    node = nodes[index];
+	    console.log(node);
+	    html.push(node.html());
+	}
+	$('#graph')[0].innerHTML = html.join('');
+	JSMM.setupNodeAttr();
+
+	// update node position
+	for(var index in nodes) nodes[index].updateElem();
+	nodes['0'].updateHeight();
+	nodes['0'].x = 20;
+	nodes['0'].y = Math.max(30, $('#graphBox').height()/2-nodes['0'].height/2);
+	nodes['0'].visible = true;
+	nodes['0'].updateCSS();
+	nodes['0'].updatePositions();
+
+	JSMM.drawCanvas();
+    },
+    drawCanvas : function(){
+	var canvas = $('#graphCanvas');
+	var graphBox = $('#graphBox');
+	canvas.attr('width', graphBox.width()+graphBox.scrollLeft());
+	canvas.attr('height', graphBox.height()+graphBox.scrollTop());
+	var ctx = canvas[0].getContext('2d');
+	ctx.clearRect(0, 0, canvas.width(), canvas.height());
+	ctx.strokeStyle = '#AAAAFF';
+	drawChild = function(node) {
+	    var w = 4;
+	    var sx = node.x + node.w + w;
+	    var sy = node.y + node.height/2;
+	    var y0 = sy - node.h/2;
+	    var y1 = sy + node.h/2;
+	    var x0 = node.x-w;
+	    ctx.beginPath();
+	    ctx.moveTo(x0, sy);
+	    ctx.quadraticCurveTo(x0, y0, node.x, y0);
+	    ctx.lineTo(sx-w, y0);
+	    ctx.quadraticCurveTo(sx, y0, sx, sy);
+	    ctx.quadraticCurveTo(sx, y1, sx-w, y1);
+	    ctx.lineTo(x0+w, y1);
+	    ctx.quadraticCurveTo(x0, y1, x0, sy);
+	    ctx.stroke();
+	    node.eachChild(function(c){
+		if(c.visible){
+		    var ex = c.x-w;
+		    var ey = c.y + c.height/2;
+		    var x1 = sx+(ex-sx)*0.8;
+		    var x2 = sx+(ex-sx)*0.2;
+		    ctx.beginPath();
+		    ctx.moveTo(sx, sy);
+		    ctx.bezierCurveTo(x1, sy, x2, ey, ex, ey);
+		    ctx.stroke();
+		    drawChild(c);
+		}else{
+		    ctx.beginPath();
+		    ctx.moveTo(sx, sy);
+		    ctx.lineTo(sx+Node.wmargin, sy);
+		    ctx.stroke();
+		}
+	    });
+	}
+	drawChild(nodes['0']);
+    },
+    // dialog
+    showDialog : function(html){
+	$('#dialogMessage')[0].innerHTML = html;
+	$('#dialog').show();
+    },
+    hideDialog : function(){
+	$('#dialog').hide();
+    },
+};
+
+// util
+function newId(map){
+    var i = Math.floor(Math.random()*100000);
+    for(; map[i]; ++i);
+    return i.toString();
+}
+
+/// id to node map : ToDo use namespace ?
+var nodes = {};
+
+/// class Node
+function Node(id){
+    // initialize
+    if(!id) id = newId(nodes);
+    this.node = id;
+    this.children = [];
+    this.visible = true;
+    this.body = defaultBody;
+    this.record = null;
+    nodes[id] = this;
+}
+Node.prototype.serializeAttr = function(f){
+    return JSON.stringify({
+	node: this.node,
+	children: this.children,
+	visible: this.visible,
+    });
+}
+Node.prototype.storeRecord = function(entry){
+    this.record = entry;
+    this.recordAttr = this.serializeAttr();
+}
+Node.prototype.changed = function(body){
+    return (this.body != body || this.recordAttr == this.serializeAttr());
+}
+Node.prototype.eachChild = function(f){
+    this.children.each(function(cid){ f(nodes[cid]); });
+}
+Node.prototype.eachVisibleChild = function(f){
+    this.children.each(function(cid){
+	var c = nodes[cid];
+	if(c.visible) f(c);
+    });
+}
+Node.prototype.html = function(){
+    return '<span class="s" id="s'+this.node+'"><span class="inside">'+this.body+'</span></span>';
+}
+Node.prototype.remove = function(rel){
+    var children = nodes[this.parent].children;
+    var id = children.indexOf(this.node);
+    children.splice(id, 1);
+    this.elem.css({top: '0px', left: '0px', visibility: 'hidden'});
+    (nodes[children[id-1]] || nodes[this.parent]).focus();
+}
+Node.prototype.getSibling = function(rel){
+    var children = nodes[this.parent].children;
+    return nodes[children[children.indexOf(this.node)+rel]];
+}
+Node.prototype.getParent = function(){
+    return nodes[this.parent];
+}
+Node.prototype.getChild = function(index){
+    if(index<0)
+	return nodes[this.children[this.children.length+index]];
+    else
+	return nodes[this.children[index]];
+}
+Node.prototype.addChild = function(){
+    c = new Node();
+    this.children.push(c.node);
+    c.parent = this.node;
+    $('#graph')[0].innerHTML += c.html();
+    JSMM.setupNodeAttr();
+    return c;
+}
+Node.prototype.addSibling = function(){
+    if(this.parent){
+	c = new Node();
+	children = nodes[this.parent].children
+	children.splice(children.indexOf(this.node)+1, 0, c.node);
+	c.parent = this.parent;
+	$('#graph')[0].innerHTML += c.html();
+	JSMM.setupNodeAttr();
+	return c;
+    }
+}
+Node.prototype.toggle = function(f){
+    this.visible = !this.visible;
+}
+Node.prototype.toggleChildren = function(f){
+    this.eachChild(function(c){c.toggle()});
+}
+
+Node.wmargin = 16;
+Node.hmargin = 8;
+Node.prototype.focus = function(){
+    this.elem.children().focus();
+}
+Node.prototype.CSSInvisible = function(){
+    this.elem.css({visibility: 'hidden'});
+}
+Node.prototype.updateElem = function(){
+    this.elem = $('#s'+this.node);
+    this.w = this.elem.width();
+    this.h = this.elem.children().height();
+    if(this.node!='0') this.CSSInvisible();
+    return this;
+}
+Node.prototype.updateCSS = function(){
+    this.elem.css({top: this.y+'px', left: this.x+'px', visibility: 'visible'});
+}
+Node.prototype.updateHeight = function(){
+    var height = -Node.hmargin;
+    this.eachVisibleChild(function(c){
+	height += Node.hmargin + c.updateHeight(); // ... NG
+    });
+    this.height = Math.max(height, this.h);
+    //this.elem.css({height: this.height+'px'});
+    padding = (this.height-this.h)/2+'px'
+    this.elem.css({'padding-top': padding, 'padding-bottom': padding});
+    return this.height;
+}
+Node.prototype.updatePositions = function(){
+    var x0 = this.x + this.w + Node.wmargin;
+    var y0 = this.y;
+    this.eachVisibleChild(function(c){
+	c.x = x0;
+	c.y = y0;
+	c.updateCSS();
+	y0 += c.height + Node.hmargin;
+	c.updatePositions();
+    });
+}
+Node.prototype.updatePositionsX = function(){
+    this.w = this.elem.width();
+    var x0 = this.x + this.w + Node.wmargin;
+    this.eachVisibleChild(function(c){
+	c.x = x0;
+	c.updateCSS();
+	c.updatePositionsX();
+    });
+}
+
+// UI helper
+function onCreateRoot(){
+    JSMM.createRoot();
+}
+function onSave(){
+    JSMM.save();
+}
+
+// new document
+function onNew(){
+    $('#newDocumentDialog').show();
+}
+function onNewFileCancel(){
+    $('#newDocumentDialog').hide();
+}
+function onNewFileOK(){
+    $('#newDocumentDialog').hide();
+    JSMM.createNewDocument("NewDocument");
+}
+
+// open document
+function onOpen(){
+    $('#fileOpenDialog').show();
+
+    var service = new google.gdata.client.GoogleService(serviceName, serviceVersion);
+    doLogin(scope);
+    service.getFeed(scope + 'spreadsheets/private/full/', function(response){
+	console.log("spreadsheets", response);
+	var entries = response.feed.entry;
+	if (!entries.length) {
+	    alert('You have no documents!');
+	    return;
+	}  
+	var html = [];
+	for (var i = 0, entry; entry = entries[i]; i++) {
+	    var title = entry.title.$t;
+	    id = /worksheets\/([^\/]+)/.exec(findLink(entry.link, /#worksheetsfeed/).href)[1]
+	    html.push('<li onclick=onOpenSelected("' + id + '")>' + title + '</li>');
+	}
+	$('#documentList')[0].innerHTML = html.join('');  
+    }, defaultErrorHandler);
+}
+function onOpenCancel(){
+    $('#fileOpenDialog').hide();
+}
+function onOpenSelected(sheetId){
+    $('#fileOpenDialog').hide();
+    JSMM.openDocument(sheetId);
+}
+
+--></script>
+</head>
+<body>
+
+<div id='graphBox'><canvas id='graphCanvas'></canvas><div id='graph'></div></div>
+<div class='lmenuBox transp'>
+    <button onclick='onNew();'>New ...</button>
+    <button onclick='onOpen();'>Open ...</button>
+    <button class='nothode' onclick="onCreateRoot()">Create Root Only</button>
+</div>
+<div class='rmenuBox transp'><button onclick='onSave();'>Save</button></div>
+
+<div id='fileOpenDialog' class='dialog'><div class='dialogWrap'><div class='dialogContent'>
+    <div class='dialogTitle'>Open File</div>
+    <div class='dialogButton'><button onclick='onOpenCancel()'>Cancel</button></div>
+    <div id='documentList' class='dialogMain'></div>
+</div></div></div>
+
+<div id='newDocumentDialog' class='dialog'><div class='dialogWrap'><div class='dialogContent'>
+    <div class='dialogTitle'>New Document</div>
+    <div class='dialogMain'>
+    <button onclick='onNewFileCancel()'>Cancel</button>
+    <button onclick='onNewFileOK()'>Open</button>
+    </div>
+</div></div></div>
+
+<div id='dialog' class='dialog'><div class='dialogWrap'><div class='dialogContent'>
+    <div class='dialogTitle'></div>
+    <div class='dialogButton'></div>
+    <div id='dialogMessage' class='dialogMain'></div>
+</div></div></div>
+
+<div class='bottomBox'>jsmm 0.1</div>
+
+<!-- dummy image -->
+<div class='main_view'><img src="mypic.gif" style="visibility: hidden;"></div>
+
+</body>
+</html>
